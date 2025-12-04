@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
-use alloc::vec::Vec;
-use core::ops::Range;
+use alloc::{vec::Vec, boxed::Box};
+use core::{ops::Range, any::Any};
 
 use range_alloc::RangeAllocator;
 use spin::Mutex;
@@ -13,6 +13,7 @@ use axdevice_base::{BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSys
 use axerrno::{AxResult, ax_err};
 use axvmconfig::{EmulatedDeviceConfig, EmulatedDeviceType};
 use memory_addr::{PhysAddr, is_aligned_4k};
+use virtio_console::VirtioConsole;
 
 use crate::AxVmDeviceConfig;
 
@@ -109,7 +110,10 @@ fn panic_device_not_found(
 /// The implemention for AxVmDevices
 impl AxVmDevices {
     /// According AxVmDeviceConfig to init the AxVmDevices
-    pub fn new(config: AxVmDeviceConfig) -> Self {
+    pub fn new(
+        config: AxVmDeviceConfig,
+        translate: Arc<Box<dyn Fn(GuestPhysAddr) -> Option<(PhysAddr, usize)> + Send + Sync>>,
+    ) -> Self {
         let mut this = Self {
             emu_mmio_devices: AxEmuMmioDevices::new(),
             emu_sys_reg_devices: AxEmuSysRegDevices::new(),
@@ -117,12 +121,16 @@ impl AxVmDevices {
             ivc_channel: None,
         };
 
-        Self::init(&mut this, &config.emu_configs);
+        Self::init(&mut this, &config.emu_configs, translate);
         this
     }
 
     /// According the emu_configs to init every  specific device
-    fn init(this: &mut Self, emu_configs: &Vec<EmulatedDeviceConfig>) {
+    fn init(
+        this: &mut Self,
+        emu_configs: &Vec<EmulatedDeviceConfig>,
+        translate: Arc<Box<dyn Fn(GuestPhysAddr) -> Option<(PhysAddr, usize)> + Send + Sync>>,
+    ) {
         for config in emu_configs {
             match config.emu_type {
                 EmulatedDeviceType::InterruptController => {
@@ -249,6 +257,19 @@ impl AxVmDevices {
                         warn!("IVCChannel already initialized, ignoring additional config");
                     }
                 }
+                EmulatedDeviceType::VirtioConsole => {
+                    let dev = Arc::new(VirtioConsole::new(
+                        config.base_gpa,
+                        config.length,
+                        config.irq_id,
+                        translate.clone(),
+                    ));
+                    this.add_mmio_dev(dev);
+                    info!(
+                        "VirtioConsole initialized at GPA {:#x}, IRQ {}", 
+                        config.base_gpa, config.irq_id
+                    );
+                }
                 _ => {
                     warn!(
                         "Emulated device {}'s type {:?} is not supported yet",
@@ -367,6 +388,18 @@ impl AxVmDevices {
     /// Find specific port device by port number
     pub fn find_port_dev(&self, port: Port) -> Option<Arc<dyn BasePortDeviceOps>> {
         self.emu_port_devices.find_dev(port)
+    }
+
+    /// Get the VirtioConsole device if exists
+    pub fn get_virtio_console(&self) -> Option<&VirtioConsole> {
+        for dev in self.iter_mmio_dev() {
+            if dev.emu_type() == EmulatedDeviceType::VirtioConsole {
+                // 尝试转换为 VirtioConsole 类型
+                return (dev.as_ref() as &dyn Any).downcast_ref::<VirtioConsole>();
+            }
+        }
+        info!("VirtioConsole device not found");
+        None
     }
 
     /// Handle the MMIO read by GuestPhysAddr and data width, return the value of the guest want to read
