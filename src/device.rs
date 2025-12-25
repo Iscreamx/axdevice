@@ -112,7 +112,6 @@ impl AxVmDevices {
     /// According AxVmDeviceConfig to init the AxVmDevices
     pub fn new(
         config: AxVmDeviceConfig,
-        translate: Arc<Box<dyn Fn(GuestPhysAddr) -> Option<(PhysAddr, usize)> + Send + Sync>>,
     ) -> Self {
         let mut this = Self {
             emu_mmio_devices: AxEmuMmioDevices::new(),
@@ -121,7 +120,7 @@ impl AxVmDevices {
             ivc_channel: None,
         };
 
-        Self::init(&mut this, &config.emu_configs, translate);
+        Self::init(&mut this, &config.emu_configs);
         this
     }
 
@@ -129,7 +128,6 @@ impl AxVmDevices {
     fn init(
         this: &mut Self,
         emu_configs: &Vec<EmulatedDeviceConfig>,
-        translate: Arc<Box<dyn Fn(GuestPhysAddr) -> Option<(PhysAddr, usize)> + Send + Sync>>,
     ) {
         for config in emu_configs {
             match config.emu_type {
@@ -262,7 +260,6 @@ impl AxVmDevices {
                         config.base_gpa,
                         config.length,
                         config.irq_id,
-                        translate.clone(),
                     ));
                     this.add_mmio_dev(dev);
                     info!(
